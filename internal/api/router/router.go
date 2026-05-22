@@ -12,7 +12,10 @@ import (
 	"github.com/nextm/nextm/internal/pkg/crypto"
 	db "github.com/nextm/nextm/internal/repository/db/sqlite"
 	authService "github.com/nextm/nextm/internal/service/auth"
+	collectionService "github.com/nextm/nextm/internal/service/collection"
 	objectService "github.com/nextm/nextm/internal/service/object"
+	relationService "github.com/nextm/nextm/internal/service/relation"
+	tagService "github.com/nextm/nextm/internal/service/tag"
 )
 
 func New(cfg *config.Config, log *slog.Logger, sqliteDB *sql.DB, postgresDB *sql.DB) *chi.Mux {
@@ -44,6 +47,9 @@ func New(cfg *config.Config, log *slog.Logger, sqliteDB *sql.DB, postgresDB *sql
 	authRepo := db.NewAuthRepository(sqliteDB)
 	objectRepo := db.NewObjectRepository(sqliteDB)
 	blockRepo := db.NewBlockRepository(sqliteDB)
+	tagRepo := db.NewTagRepository(sqliteDB)
+	relRepo := db.NewRelationRepository(sqliteDB)
+	colRepo := db.NewCollectionRepository(sqliteDB)
 
 	// Auth 模块
 	authSvc := authService.NewService(authRepo, jwtManager, authService.Config{
@@ -54,6 +60,18 @@ func New(cfg *config.Config, log *slog.Logger, sqliteDB *sql.DB, postgresDB *sql
 	// Object 模块
 	objectSvc := objectService.NewService(objectRepo, blockRepo)
 	objectHandler := handler.NewObjectHandler(objectSvc)
+
+	// Tag 模块
+	tagSvc := tagService.NewService(tagRepo)
+	tagHandler := handler.NewTagHandler(tagSvc)
+
+	// Relation 模块
+	relSvc := relationService.NewService(relRepo)
+	relHandler := handler.NewRelationHandler(relSvc)
+
+	// Collection 模块
+	colSvc := collectionService.NewService(colRepo)
+	colHandler := handler.NewCollectionHandler(colSvc)
 
 	// ─── API v1 ────────────────────────────────────────
 	r.Route("/api/v1", func(r chi.Router) {
@@ -85,6 +103,36 @@ func New(cfg *config.Config, log *slog.Logger, sqliteDB *sql.DB, postgresDB *sql
 			r.Post("/objects/{id}/blocks", objectHandler.CreateBlock)
 			r.Put("/blocks/{id}", objectHandler.UpdateBlock)
 			r.Delete("/blocks/{id}", objectHandler.DeleteBlock)
+
+			// 标签
+			r.Get("/tags", tagHandler.List)
+			r.Post("/tags", tagHandler.Create)
+			r.Get("/tags/{id}", tagHandler.Get)
+			r.Put("/tags/{id}", tagHandler.Update)
+			r.Delete("/tags/{id}", tagHandler.Delete)
+			r.Get("/objects/{id}/tags", tagHandler.GetObjectTags)
+			r.Post("/objects/{id}/tags", tagHandler.AssignTags)
+			r.Delete("/objects/{id}/tags/{tagId}", tagHandler.UnassignTag)
+
+			// 关系
+			r.Get("/objects/{id}/relations", relHandler.ListByObject)
+			r.Post("/relations", relHandler.Create)
+			r.Put("/relations/{id}", relHandler.Update)
+			r.Delete("/relations/{id}", relHandler.Delete)
+
+			// 集合
+			r.Get("/collections", colHandler.List)
+			r.Post("/collections", colHandler.Create)
+			r.Get("/collections/{id}", colHandler.Get)
+			r.Put("/collections/{id}", colHandler.Update)
+			r.Delete("/collections/{id}", colHandler.Delete)
+			r.Get("/collections/{id}/views", colHandler.ListViews)
+			r.Post("/collections/{id}/views", colHandler.CreateView)
+			r.Put("/collections/views/{id}", colHandler.UpdateView)
+			r.Delete("/collections/views/{id}", colHandler.DeleteView)
+			r.Get("/collections/{id}/items", colHandler.ListItems)
+			r.Post("/collections/{id}/items", colHandler.AddItem)
+			r.Delete("/collections/items/{itemId}", colHandler.RemoveItem)
 		})
 	})
 

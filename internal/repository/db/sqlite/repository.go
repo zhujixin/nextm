@@ -202,6 +202,14 @@ func fieldPtr[T any](v reflect.Value, name string) *T {
 	return &val
 }
 
+func fieldFloat(v reflect.Value, name string) float64 {
+	f := v.FieldByName(name)
+	if !f.IsValid() {
+		return 0
+	}
+	return f.Float()
+}
+
 func reflectObject(v reflect.Value) *model.KnowledgeObject {
 	return &model.KnowledgeObject{
 		ID:         fieldStr(v, "ID"),
@@ -507,4 +515,444 @@ func (r *BlockRepository) CountBlocksByObject(ctx context.Context, objectID stri
 	err := r.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM blocks WHERE object_id = ?`, objectID).Scan(&count)
 	return count, err
+}
+
+// ─── Tag Repository ───────────────────────────────────────
+
+type TagRepository struct {
+	db *sql.DB
+}
+
+func NewTagRepository(db *sql.DB) *TagRepository {
+	return &TagRepository{db: db}
+}
+
+const tagColumns = `id, space_id, name, color, parent_id, ai_generated, object_count, created_at, updated_at`
+
+func scanTag(scanner interface{ Scan(dest ...interface{}) error }, t *model.Tag) error {
+	var parentID sql.NullString
+	err := scanner.Scan(&t.ID, &t.SpaceID, &t.Name, &t.Color,
+		&parentID, &t.AIGenerated, &t.ObjectCount, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return err
+	}
+	if parentID.Valid {
+		t.ParentID = &parentID.String
+	}
+	return nil
+}
+
+func (r *TagRepository) ListTags(ctx context.Context, spaceID string) ([]*model.Tag, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+tagColumns+` FROM tags WHERE space_id = ? ORDER BY name`, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.Tag
+	for rows.Next() {
+		t := &model.Tag{}
+		if err := scanTag(rows, t); err != nil {
+			return nil, err
+		}
+		result = append(result, t)
+	}
+	return result, rows.Err()
+}
+
+func (r *TagRepository) GetTag(ctx context.Context, id string) (*model.Tag, error) {
+	t := &model.Tag{}
+	err := scanTag(r.db.QueryRowContext(ctx,
+		`SELECT `+tagColumns+` FROM tags WHERE id = ?`, id), t)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (r *TagRepository) CreateTag(ctx context.Context, arg interface{}) (*model.Tag, error) {
+	v := reflect.ValueOf(arg)
+	id := fieldStr(v, "ID")
+	spaceID := fieldStr(v, "SpaceID")
+	name := fieldStr(v, "Name")
+	color := fieldStr(v, "Color")
+	parentID := fieldPtr[string](v, "ParentID")
+	createdAt := fieldInt(v, "CreatedAt")
+	updatedAt := fieldInt(v, "UpdatedAt")
+
+	t := &model.Tag{}
+	err := scanTag(r.db.QueryRowContext(ctx,
+		`INSERT INTO tags (id, space_id, name, color, parent_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 RETURNING `+tagColumns,
+		id, spaceID, name, color, parentID, createdAt, updatedAt), t)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (r *TagRepository) UpdateTag(ctx context.Context, arg interface{}) (*model.Tag, error) {
+	v := reflect.ValueOf(arg)
+	t := &model.Tag{}
+	err := scanTag(r.db.QueryRowContext(ctx,
+		`UPDATE tags SET name = ?, color = ?, parent_id = ?, updated_at = ?
+		 WHERE id = ? RETURNING `+tagColumns,
+		fieldStr(v, "Name"), fieldStr(v, "Color"),
+		fieldPtr[string](v, "ParentID"), fieldInt(v, "UpdatedAt"),
+		fieldStr(v, "ID")), t)
+	if err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func (r *TagRepository) DeleteTag(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM tags WHERE id = ?`, id)
+	return err
+}
+
+func (r *TagRepository) GetObjectTags(ctx context.Context, objectID string) ([]*model.Tag, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT t.id, t.space_id, t.name, t.color, t.parent_id,
+		        t.ai_generated, t.object_count, t.created_at, t.updated_at
+		 FROM tags t JOIN object_tags ot ON t.id = ot.tag_id
+		 WHERE ot.object_id = ? ORDER BY t.name`, objectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.Tag
+	for rows.Next() {
+		t := &model.Tag{}
+		if err := scanTag(rows, t); err != nil {
+			return nil, err
+		}
+		result = append(result, t)
+	}
+	return result, rows.Err()
+}
+
+func (r *TagRepository) AssignTags(ctx context.Context, objectID string, tagIDs []string) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	for _, tagID := range tagIDs {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO object_tags (object_id, tag_id) VALUES (?, ?)`,
+			objectID, tagID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (r *TagRepository) UnassignTag(ctx context.Context, objectID, tagID string) error {
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM object_tags WHERE object_id = ? AND tag_id = ?`, objectID, tagID)
+	return err
+}
+
+// ─── Relation Repository ──────────────────────────────────
+
+type RelationRepository struct {
+	db *sql.DB
+}
+
+func NewRelationRepository(db *sql.DB) *RelationRepository {
+	return &RelationRepository{db: db}
+}
+
+const relationColumns = `id, source_id, target_id, type, custom_type_id,
+	weight, metadata, ai_generated, source_object_type, target_object_type, created_at`
+
+func scanRelation(scanner interface{ Scan(dest ...interface{}) error }, r *model.Relation) error {
+	var customTypeID sql.NullString
+	err := scanner.Scan(&r.ID, &r.SourceID, &r.TargetID, &r.Type,
+		&customTypeID, &r.Weight, &r.Metadata, &r.AIGenerated,
+		&r.SourceObjectType, &r.TargetObjectType, &r.CreatedAt)
+	if err != nil {
+		return err
+	}
+	if customTypeID.Valid {
+		r.CustomTypeID = &customTypeID.String
+	}
+	return nil
+}
+
+func (r *RelationRepository) listByQuery(ctx context.Context, query string, args ...interface{}) ([]*model.Relation, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+relationColumns+` FROM relations `+query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.Relation
+	for rows.Next() {
+		rel := &model.Relation{}
+		if err := scanRelation(rows, rel); err != nil {
+			return nil, err
+		}
+		result = append(result, rel)
+	}
+	return result, rows.Err()
+}
+
+func (r *RelationRepository) ListRelationsBySource(ctx context.Context, sourceID string) ([]*model.Relation, error) {
+	return r.listByQuery(ctx, `WHERE source_id = ? ORDER BY created_at DESC`, sourceID)
+}
+
+func (r *RelationRepository) ListRelationsByTarget(ctx context.Context, targetID string) ([]*model.Relation, error) {
+	return r.listByQuery(ctx, `WHERE target_id = ? ORDER BY created_at DESC`, targetID)
+}
+
+func (r *RelationRepository) ListRelationsByObject(ctx context.Context, objectID string) ([]*model.Relation, error) {
+	return r.listByQuery(ctx, `WHERE source_id = ? OR target_id = ? ORDER BY created_at DESC`, objectID, objectID)
+}
+
+func (r *RelationRepository) GetRelation(ctx context.Context, id string) (*model.Relation, error) {
+	rel := &model.Relation{}
+	err := scanRelation(r.db.QueryRowContext(ctx,
+		`SELECT `+relationColumns+` FROM relations WHERE id = ?`, id), rel)
+	if err != nil {
+		return nil, err
+	}
+	return rel, nil
+}
+
+func (r *RelationRepository) CreateRelation(ctx context.Context, arg interface{}) (*model.Relation, error) {
+	v := reflect.ValueOf(arg)
+	rel := &model.Relation{}
+	err := scanRelation(r.db.QueryRowContext(ctx,
+		`INSERT INTO relations (id, source_id, target_id, type, custom_type_id,
+		 weight, metadata, ai_generated, source_object_type, target_object_type, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, 0, '', '', ?)
+		 RETURNING `+relationColumns,
+		fieldStr(v, "ID"), fieldStr(v, "SourceID"), fieldStr(v, "TargetID"),
+		fieldStr(v, "Type"), fieldPtr[string](v, "CustomTypeID"),
+		fieldFloat(v, "Weight"), fieldStr(v, "Metadata"), fieldInt(v, "CreatedAt")), rel)
+	if err != nil {
+		return nil, err
+	}
+	return rel, nil
+}
+
+func (r *RelationRepository) UpdateRelation(ctx context.Context, arg interface{}) (*model.Relation, error) {
+	v := reflect.ValueOf(arg)
+	rel := &model.Relation{}
+	err := scanRelation(r.db.QueryRowContext(ctx,
+		`UPDATE relations SET type = ?, custom_type_id = ?, weight = ?, metadata = ?, created_at = ?
+		 WHERE id = ? RETURNING `+relationColumns,
+		fieldStr(v, "Type"), fieldPtr[string](v, "CustomTypeID"),
+		fieldFloat(v, "Weight"), fieldStr(v, "Metadata"),
+		fieldInt(v, "UpdatedAt"), fieldStr(v, "ID")), rel)
+	if err != nil {
+		return nil, err
+	}
+	return rel, nil
+}
+
+func (r *RelationRepository) DeleteRelation(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM relations WHERE id = ?`, id)
+	return err
+}
+
+// ─── Collection Repository ────────────────────────────────
+
+type CollectionRepository struct {
+	db *sql.DB
+}
+
+func NewCollectionRepository(db *sql.DB) *CollectionRepository {
+	return &CollectionRepository{db: db}
+}
+
+const collectionColumns = `id, space_id, name, source_type, source_config, layout, created_at, updated_at`
+
+func scanCollection(scanner interface{ Scan(dest ...interface{}) error }, c *model.Collection) error {
+	return scanner.Scan(&c.ID, &c.SpaceID, &c.Name, &c.SourceType,
+		&c.SourceConfig, &c.Layout, &c.CreatedAt, &c.UpdatedAt)
+}
+
+func (r *CollectionRepository) ListCollections(ctx context.Context, spaceID string) ([]*model.Collection, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+collectionColumns+` FROM collections WHERE space_id = ? ORDER BY created_at DESC`, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.Collection
+	for rows.Next() {
+		c := &model.Collection{}
+		if err := scanCollection(rows, c); err != nil {
+			return nil, err
+		}
+		result = append(result, c)
+	}
+	return result, rows.Err()
+}
+
+func (r *CollectionRepository) GetCollection(ctx context.Context, id string) (*model.Collection, error) {
+	c := &model.Collection{}
+	err := scanCollection(r.db.QueryRowContext(ctx,
+		`SELECT `+collectionColumns+` FROM collections WHERE id = ?`, id), c)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (r *CollectionRepository) CreateCollection(ctx context.Context, arg interface{}) (*model.Collection, error) {
+	v := reflect.ValueOf(arg)
+	c := &model.Collection{}
+	err := scanCollection(r.db.QueryRowContext(ctx,
+		`INSERT INTO collections (id, space_id, name, source_type, source_config, layout, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 RETURNING `+collectionColumns,
+		fieldStr(v, "ID"), fieldStr(v, "SpaceID"), fieldStr(v, "Name"),
+		fieldStr(v, "SourceType"), fieldStr(v, "SourceConfig"),
+		fieldStr(v, "Layout"), fieldInt(v, "CreatedAt"), fieldInt(v, "UpdatedAt")), c)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (r *CollectionRepository) UpdateCollection(ctx context.Context, arg interface{}) (*model.Collection, error) {
+	v := reflect.ValueOf(arg)
+	c := &model.Collection{}
+	err := scanCollection(r.db.QueryRowContext(ctx,
+		`UPDATE collections SET name = ?, source_type = ?, source_config = ?, layout = ?, updated_at = ?
+		 WHERE id = ? RETURNING `+collectionColumns,
+		fieldStr(v, "Name"), fieldStr(v, "SourceType"),
+		fieldStr(v, "SourceConfig"), fieldStr(v, "Layout"),
+		fieldInt(v, "UpdatedAt"), fieldStr(v, "ID")), c)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (r *CollectionRepository) DeleteCollection(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM collections WHERE id = ?`, id)
+	return err
+}
+
+// ─── Collection View ──────────────────────────────────────
+
+const viewColumns = `id, collection_id, name, view_type, filters, sorts,
+	visible_fields, group_by, calendar_field, kanban_field, created_at, updated_at`
+
+func scanView(scanner interface{ Scan(dest ...interface{}) error }, v *model.CollectionView) error {
+	return scanner.Scan(&v.ID, &v.CollectionID, &v.Name, &v.ViewType,
+		&v.Filters, &v.Sorts, &v.VisibleFields, &v.GroupBy,
+		&v.CalendarField, &v.KanbanField, &v.CreatedAt, &v.UpdatedAt)
+}
+
+func (r *CollectionRepository) ListViews(ctx context.Context, collectionID string) ([]*model.CollectionView, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+viewColumns+` FROM collection_views WHERE collection_id = ? ORDER BY created_at`, collectionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.CollectionView
+	for rows.Next() {
+		v := &model.CollectionView{}
+		if err := scanView(rows, v); err != nil {
+			return nil, err
+		}
+		result = append(result, v)
+	}
+	return result, rows.Err()
+}
+
+func (r *CollectionRepository) CreateView(ctx context.Context, arg interface{}) (*model.CollectionView, error) {
+	v := reflect.ValueOf(arg)
+	cv := &model.CollectionView{}
+	err := scanView(r.db.QueryRowContext(ctx,
+		`INSERT INTO collection_views (id, collection_id, name, view_type, filters, sorts,
+		 visible_fields, group_by, calendar_field, kanban_field, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 RETURNING `+viewColumns,
+		fieldStr(v, "ID"), fieldStr(v, "CollectionID"), fieldStr(v, "Name"),
+		fieldStr(v, "ViewType"), fieldStr(v, "Filters"), fieldStr(v, "Sorts"),
+		fieldStr(v, "VisibleFields"), fieldStr(v, "GroupBy"),
+		fieldStr(v, "CalendarField"), fieldStr(v, "KanbanField"),
+		fieldInt(v, "CreatedAt"), fieldInt(v, "UpdatedAt")), cv)
+	if err != nil {
+		return nil, err
+	}
+	return cv, nil
+}
+
+func (r *CollectionRepository) UpdateView(ctx context.Context, arg interface{}) (*model.CollectionView, error) {
+	v := reflect.ValueOf(arg)
+	cv := &model.CollectionView{}
+	err := scanView(r.db.QueryRowContext(ctx,
+		`UPDATE collection_views SET name = ?, view_type = ?, filters = ?, sorts = ?,
+		 visible_fields = ?, group_by = ?, calendar_field = ?, kanban_field = ?, updated_at = ?
+		 WHERE id = ? RETURNING `+viewColumns,
+		fieldStr(v, "Name"), fieldStr(v, "ViewType"),
+		fieldStr(v, "Filters"), fieldStr(v, "Sorts"),
+		fieldStr(v, "VisibleFields"), fieldStr(v, "GroupBy"),
+		fieldStr(v, "CalendarField"), fieldStr(v, "KanbanField"),
+		fieldInt(v, "UpdatedAt"), fieldStr(v, "ID")), cv)
+	if err != nil {
+		return nil, err
+	}
+	return cv, nil
+}
+
+func (r *CollectionRepository) DeleteView(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM collection_views WHERE id = ?`, id)
+	return err
+}
+
+// ─── Collection Item ──────────────────────────────────────
+
+const itemColumns = `id, collection_id, object_id, position, note`
+
+func scanItem(scanner interface{ Scan(dest ...interface{}) error }, i *model.CollectionItem) error {
+	return scanner.Scan(&i.ID, &i.CollectionID, &i.ObjectID, &i.Position, &i.Note)
+}
+
+func (r *CollectionRepository) ListItems(ctx context.Context, collectionID string) ([]*model.CollectionItem, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+itemColumns+` FROM collection_items WHERE collection_id = ? ORDER BY position`, collectionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []*model.CollectionItem
+	for rows.Next() {
+		i := &model.CollectionItem{}
+		if err := scanItem(rows, i); err != nil {
+			return nil, err
+		}
+		result = append(result, i)
+	}
+	return result, rows.Err()
+}
+
+func (r *CollectionRepository) AddItem(ctx context.Context, arg interface{}) (*model.CollectionItem, error) {
+	v := reflect.ValueOf(arg)
+	item := &model.CollectionItem{}
+	err := scanItem(r.db.QueryRowContext(ctx,
+		`INSERT INTO collection_items (id, collection_id, object_id, position, note)
+		 VALUES (?, ?, ?, ?, ?)
+		 RETURNING `+itemColumns,
+		fieldStr(v, "ID"), fieldStr(v, "CollectionID"), fieldStr(v, "ObjectID"),
+		fieldFloat(v, "Position"), fieldStr(v, "Note")), item)
+	if err != nil {
+		return nil, err
+	}
+	return item, nil
+}
+
+func (r *CollectionRepository) RemoveItem(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM collection_items WHERE id = ?`, id)
+	return err
 }
