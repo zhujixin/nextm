@@ -1,0 +1,62 @@
+# NextM 默认配置文件
+# 配置文件优先级: 默认值 < nextm.yaml < 环境变量 NEXTM_*
+server:
+  listen_addr: ":8080"
+  graceful_timeout: 30s
+
+log:
+  level: info
+  format: json # json | text
+
+database:
+  sqlite:
+    path: ./data/nextm.db
+    wal: true
+    foreign_keys: true
+  postgres:
+    dsn: ""
+    max_open_conns: 25
+    max_idle_conns: 10
+    conn_max_lifetime: 5m
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+nats:
+  url: "nats://localhost:4222"
+  consumer_name: "nextm-worker"
+
+meilisearch:
+  host: "http://localhost:7700"
+  api_key: ""
+
+litellm:
+  url: "http://localhost:4000"
+  api_key: ""
+  timeout: 30s
+
+jwt:
+  secret: "change-me"
+  access_token_ttl: 15m
+  refresh_token_ttl: 168h
+
+auth:
+  bcrypt_cost: 12
+  rate_limit: 5
+  rate_limit_window: 15m
+
+cors:
+  allowed_origins:
+    - "http://localhost:5173"
+    - "http://localhost:3000"
+  allowed_headers:
+    - "Authorization"
+    - "Content-Type"
+    - "X-Space-ID"
+    - "X-Request-ID"
+
+otel:
+  service_name: "nextm-server"
+  trace_ratio: 0.1
