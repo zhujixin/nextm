@@ -1,7 +1,7 @@
 # NextM — OpenAPI 规范
 
-**版本**: V1.0
-**状态**: 初稿
+**版本**: V1.1
+**状态**: 交叉验证修订版
 **最后更新**: 2026-05-22
 
 **OpenAPI**: 3.0.3
@@ -995,6 +995,56 @@ GET /api/v1/sync/status
     last_sync_at: integer
     pending_changes: integer
     conflicts: integer
+```
+
+### 3.13 数据导出
+
+```
+#### 创建导出任务
+POST /api/v1/export
+  Body:
+    format: string           # "markdown" | "json" | "pdf"
+    scope: string            # "space" | "collection" | "object"
+    scope_id: string         # 对应 scope 的 ID
+    options:
+      include_blocks: boolean (默认 true)
+      include_attachments: boolean (默认 false)
+      include_relations: boolean (默认 true)
+  Response 201:
+    job_id: string
+    status: queued
+    created_at: integer
+
+#### 获取导出任务列表
+GET /api/v1/export
+  Response 200:
+    jobs:
+      - job_id: string
+        format: string
+        status: queued | processing | completed | failed
+        progress: integer   # 0-100
+        download_url: string (仅 completed)
+        created_at: integer
+
+#### 获取导出任务状态
+GET /api/v1/export/:job_id
+  Response 200:
+    job_id: string
+    format: string
+    status: queued | processing | completed | failed
+    progress: integer
+    download_url: string
+    error: string
+    created_at: integer
+    completed_at: integer
+
+#### 下载导出文件
+GET /api/v1/export/:job_id/download
+  Response 200: (文件流, Content-Type: application/octet-stream)
+
+#### 取消导出任务
+POST /api/v1/export/:job_id/cancel
+  Response 200: {status: cancelled}
 ```
 
 ---

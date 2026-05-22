@@ -1,7 +1,7 @@
 # NextM — 产品设计说明书
 
-**版本**: V1.0
-**状态**: 初稿
+**版本**: V1.1
+**状态**: 交叉验证修订版
 **最后更新**: 2026-05-22
 
 > **范围说明**: 本文档覆盖 PRD 中 P0（核心体验）和大部分 P1 功能的设计。以下 PRD 识别的 P1/P2 需求在本版本 PDD 中暂未展开详细设计，将在后续 Phase 中补充：会议录音、AI Link 摘要、微信/Telegram 转发、系统音频捕获、代码片段检索、热力图、名片识别、思维导图识别、CLI 工具、插件市场、Webhook。详见 PRD 路线图。
@@ -381,6 +381,7 @@ const (
     ViewTypeGallery  ViewType = "gallery"
     ViewTypeCalendar ViewType = "calendar"
     ViewTypeTimeline ViewType = "timeline"
+    ViewTypeList     ViewType = "list"
 )
 
 // CollectionView 数据库视图
