@@ -177,26 +177,47 @@ func NewObjectRepository(db *sql.DB) *ObjectRepository {
 	return &ObjectRepository{db: db}
 }
 
+func fieldStr(v reflect.Value, name string) string {
+	f := v.FieldByName(name)
+	if !f.IsValid() {
+		return ""
+	}
+	return f.String()
+}
+
+func fieldInt(v reflect.Value, name string) int64 {
+	f := v.FieldByName(name)
+	if !f.IsValid() {
+		return 0
+	}
+	return f.Int()
+}
+
+func fieldPtr[T any](v reflect.Value, name string) *T {
+	f := v.FieldByName(name)
+	if !f.IsValid() || f.Kind() != reflect.Ptr || f.IsNil() {
+		return nil
+	}
+	val := f.Elem().Interface().(T)
+	return &val
+}
+
 func reflectObject(v reflect.Value) *model.KnowledgeObject {
-	obj := &model.KnowledgeObject{
-		ID:         v.FieldByName("ID").String(),
-		SpaceID:    v.FieldByName("SpaceID").String(),
-		TypeID:     v.FieldByName("TypeID").String(),
-		Title:      v.FieldByName("Title").String(),
-		Properties: v.FieldByName("Properties").String(),
-		Tags:       v.FieldByName("Tags").String(),
-		Source:     v.FieldByName("Source").String(),
-		SourceMeta: v.FieldByName("SourceMeta").String(),
-		WordCount:  int(v.FieldByName("WordCount").Int()),
-		Version:    int(v.FieldByName("Version").Int()),
-		CreatedAt:  v.FieldByName("CreatedAt").Int(),
-		UpdatedAt:  v.FieldByName("UpdatedAt").Int(),
+	return &model.KnowledgeObject{
+		ID:         fieldStr(v, "ID"),
+		SpaceID:    fieldStr(v, "SpaceID"),
+		TypeID:     fieldStr(v, "TypeID"),
+		Title:      fieldStr(v, "Title"),
+		Properties: fieldStr(v, "Properties"),
+		Tags:       fieldStr(v, "Tags"),
+		Source:     fieldStr(v, "Source"),
+		SourceMeta: fieldStr(v, "SourceMeta"),
+		WordCount:  int(fieldInt(v, "WordCount")),
+		Version:    int(fieldInt(v, "Version")),
+		CreatedAt:  fieldInt(v, "CreatedAt"),
+		UpdatedAt:  fieldInt(v, "UpdatedAt"),
+		CoverImage: fieldPtr[string](v, "CoverImage"),
 	}
-	if cv := v.FieldByName("CoverImage"); cv.Kind() == reflect.Ptr && !cv.IsNil() {
-		s := cv.Elem().String()
-		obj.CoverImage = &s
-	}
-	return obj
 }
 
 func scanObject(scanner interface {
@@ -279,32 +300,44 @@ func (r *ObjectRepository) GetObject(ctx context.Context, id, spaceID string) (*
 func (r *ObjectRepository) CreateObject(ctx context.Context, arg interface{}) (*model.KnowledgeObject, error) {
 	v := reflect.ValueOf(arg)
 	obj := reflectObject(v)
-	_, err := r.db.ExecContext(ctx,
+	var coverImage interface{}
+	if obj.CoverImage != nil {
+		coverImage = *obj.CoverImage
+	}
+	obj2 := &model.KnowledgeObject{}
+	err := scanObject(r.db.QueryRowContext(ctx,
 		`INSERT INTO objects (id, space_id, type_id, title, properties, tags,
 		 cover_image, source, source_meta, word_count, version, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		 RETURNING `+objectColumns,
 		obj.ID, obj.SpaceID, obj.TypeID, obj.Title, obj.Properties, obj.Tags,
-		obj.CoverImage, obj.Source, obj.SourceMeta, obj.WordCount,
-		obj.CreatedAt, obj.UpdatedAt)
+		coverImage, obj.Source, obj.SourceMeta, obj.WordCount,
+		obj.CreatedAt, obj.UpdatedAt), obj2)
 	if err != nil {
 		return nil, err
 	}
-	return obj, nil
+	return obj2, nil
 }
 
 func (r *ObjectRepository) UpdateObject(ctx context.Context, arg interface{}) (*model.KnowledgeObject, error) {
 	v := reflect.ValueOf(arg)
 	obj := reflectObject(v)
-	_, err := r.db.ExecContext(ctx,
+	var coverImage interface{}
+	if obj.CoverImage != nil {
+		coverImage = *obj.CoverImage
+	}
+	obj2 := &model.KnowledgeObject{}
+	err := scanObject(r.db.QueryRowContext(ctx,
 		`UPDATE objects SET title = ?, properties = ?, tags = ?, cover_image = ?,
 		 word_count = ?, version = version + 1, updated_at = ?
-		 WHERE id = ? AND space_id = ? AND is_deleted = 0`,
-		obj.Title, obj.Properties, obj.Tags, obj.CoverImage,
-		obj.WordCount, obj.UpdatedAt, obj.ID, obj.SpaceID)
+		 WHERE id = ? AND space_id = ? AND is_deleted = 0
+		 RETURNING `+objectColumns,
+		obj.Title, obj.Properties, obj.Tags, coverImage,
+		obj.WordCount, obj.UpdatedAt, obj.ID, obj.SpaceID), obj2)
 	if err != nil {
 		return nil, err
 	}
-	return obj, nil
+	return obj2, nil
 }
 
 func (r *ObjectRepository) SoftDeleteObject(ctx context.Context, id, spaceID string, updatedAt int64) error {
@@ -407,30 +440,30 @@ func (r *BlockRepository) GetBlock(ctx context.Context, id string) (*model.Block
 
 func (r *BlockRepository) CreateBlock(ctx context.Context, arg interface{}) (*model.Block, error) {
 	v := reflect.ValueOf(arg)
-	b := &model.Block{
-		ID:         v.FieldByName("ID").String(),
-		ObjectID:   v.FieldByName("ObjectID").String(),
-		Type:       v.FieldByName("Type").String(),
-		Content:    v.FieldByName("Content").String(),
-		Properties: v.FieldByName("Properties").String(),
-		Position:   v.FieldByName("Position").Float(),
-		Depth:      int(v.FieldByName("Depth").Int()),
-		Color:      v.FieldByName("Color").String(),
-		Version:    1,
-		SyncStatus: "synced",
-		CreatedAt:  v.FieldByName("CreatedAt").Int(),
-		UpdatedAt:  v.FieldByName("UpdatedAt").Int(),
-	}
+	id := v.FieldByName("ID").String()
+	objectID := v.FieldByName("ObjectID").String()
+	typ := v.FieldByName("Type").String()
+	content := v.FieldByName("Content").String()
+	properties := v.FieldByName("Properties").String()
+	position := v.FieldByName("Position").Float()
+	depth := int(v.FieldByName("Depth").Int())
+	color := v.FieldByName("Color").String()
+	createdAt := v.FieldByName("CreatedAt").Int()
+	updatedAt := v.FieldByName("UpdatedAt").Int()
+
+	var parentID interface{}
 	if p := v.FieldByName("ParentID"); p.Kind() == reflect.Ptr && !p.IsNil() {
-		s := p.Elem().String()
-		b.ParentID = &s
+		parentID = p.Elem().String()
 	}
-	_, err := r.db.ExecContext(ctx,
+
+	b := &model.Block{}
+	err := scanBlock(r.db.QueryRowContext(ctx,
 		`INSERT INTO blocks (id, object_id, parent_id, type, content, properties,
 		 position, depth, color, version, sync_status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'synced', ?, ?)`,
-		b.ID, b.ObjectID, b.ParentID, b.Type, b.Content, b.Properties,
-		b.Position, b.Depth, b.Color, b.CreatedAt, b.UpdatedAt)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'synced', ?, ?)
+		 RETURNING `+blockColumns,
+		id, objectID, parentID, typ, content, properties,
+		position, depth, color, createdAt, updatedAt), b)
 	if err != nil {
 		return nil, err
 	}
@@ -439,24 +472,25 @@ func (r *BlockRepository) CreateBlock(ctx context.Context, arg interface{}) (*mo
 
 func (r *BlockRepository) UpdateBlock(ctx context.Context, arg interface{}) (*model.Block, error) {
 	v := reflect.ValueOf(arg)
-	b := &model.Block{
-		ID:         v.FieldByName("ID").String(),
-		ObjectID:   v.FieldByName("ObjectID").String(),
-		Content:    v.FieldByName("Content").String(),
-		Properties: v.FieldByName("Properties").String(),
-		Type:       v.FieldByName("Type").String(),
-		Position:   v.FieldByName("Position").Float(),
-		Depth:      int(v.FieldByName("Depth").Int()),
-		Color:      v.FieldByName("Color").String(),
-		UpdatedAt:  v.FieldByName("UpdatedAt").Int(),
-	}
-	_, err := r.db.ExecContext(ctx,
+	id := v.FieldByName("ID").String()
+	objectID := v.FieldByName("ObjectID").String()
+	content := v.FieldByName("Content").String()
+	properties := v.FieldByName("Properties").String()
+	typ := v.FieldByName("Type").String()
+	position := v.FieldByName("Position").Float()
+	depth := int(v.FieldByName("Depth").Int())
+	color := v.FieldByName("Color").String()
+	updatedAt := v.FieldByName("UpdatedAt").Int()
+
+	b := &model.Block{}
+	err := scanBlock(r.db.QueryRowContext(ctx,
 		`UPDATE blocks SET content = ?, properties = ?, type = ?,
 		 position = ?, depth = ?, color = ?,
 		 version = version + 1, updated_at = ?
-		 WHERE id = ? AND object_id = ?`,
-		b.Content, b.Properties, b.Type, b.Position, b.Depth, b.Color,
-		b.UpdatedAt, b.ID, b.ObjectID)
+		 WHERE id = ? AND object_id = ?
+		 RETURNING `+blockColumns,
+		content, properties, typ, position, depth, color,
+		updatedAt, id, objectID), b)
 	if err != nil {
 		return nil, err
 	}
