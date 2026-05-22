@@ -1,0 +1,43 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    schema: "internal/repository/db/migrations"
+    queries: "internal/repository/db/queries"
+    gen:
+      go:
+        package: "db"
+        out: "internal/repository/db/sqlite"
+        sql_package: "database/sql"
+        emit_interface: true
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          - column: "objects.embedding_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "objects.cover_image"
+            go_type:
+              type: "string"
+              pointer: true
+
+  - engine: "postgresql"
+    schema: "internal/repository/db/migrations"
+    queries: "internal/repository/db/queries"
+    gen:
+      go:
+        package: "db"
+        out: "internal/repository/db/postgres"
+        sql_package: "pgx/v5"
+        emit_interface: true
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        overrides:
+          - column: "objects.embedding_id"
+            go_type:
+              type: "string"
+              pointer: true
+          - column: "objects.cover_image"
+            go_type:
+              type: "string"
+              pointer: true

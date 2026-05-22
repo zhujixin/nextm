@@ -3,15 +3,17 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/google/uuid"
+	"github.com/nextm/nextm/internal/pkg/crypto"
 )
 
 type ctxKey string
 
 const (
-	traceIDKey ctxKey = "trace_id"
-	spaceIDKey ctxKey = "space_id"
+	traceIDKey   ctxKey = "trace_id"
+	spaceIDKey   ctxKey = "space_id"
 	accountIDKey ctxKey = "account_id"
 )
 
@@ -40,6 +42,14 @@ func contextWithTraceID(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, traceIDKey, id)
 }
 
+func contextWithAccountID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, accountIDKey, id)
+}
+
+func contextWithSpaceID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, spaceIDKey, id)
+}
+
 // RequestID 注入请求 ID 到 context 和 response header
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +60,34 @@ func RequestID(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", id)
 		next.ServeHTTP(w, r.WithContext(contextWithTraceID(r.Context(), id)))
 	})
+}
+
+// RequireAuth JWT 认证中间件
+func RequireAuth(jwt *crypto.JWTManager) func(next http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			auth := r.Header.Get("Authorization")
+			if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+				http.Error(w, `{"error":{"code":2001,"message":"未授权"}}`, http.StatusUnauthorized)
+				return
+			}
+
+			tokenStr := strings.TrimPrefix(auth, "Bearer ")
+			claims, err := jwt.ValidateAccessToken(tokenStr)
+			if err != nil {
+				http.Error(w, `{"error":{"code":2001,"message":"Token 无效或已过期"}}`, http.StatusUnauthorized)
+				return
+			}
+
+			// 从请求头获取 SpaceID（前端在请求头中传递）
+			spaceID := r.Header.Get("X-Space-ID")
+
+			ctx := r.Context()
+			ctx = contextWithAccountID(ctx, claims.AccountID)
+			ctx = contextWithSpaceID(ctx, spaceID)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
 }
 
 // CORS 处理跨域

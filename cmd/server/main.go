@@ -40,6 +40,13 @@ func main() {
 	defer sqliteDB.Close()
 	log.Info("sqlite connected", "path", cfg.Database.SQLite.Path)
 
+	// 执行数据库迁移
+	if err := runMigrations(sqliteDB, "internal/repository/db/migrations/000001_initial.up.sql"); err != nil {
+		log.Error("migration failed", "error", err)
+		os.Exit(1)
+	}
+	log.Info("database migrations applied")
+
 	// 可选连接 PostgreSQL
 	var postgresDB *sql.DB
 	if cfg.Database.Postgres.DSN != "" {
@@ -89,4 +96,65 @@ func main() {
 	}
 
 	log.Info("server stopped")
+}
+
+// runMigrations 执行 SQL 迁移文件
+func runMigrations(db *sql.DB, path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	// 按 `;` 分割 SQL 语句，逐条执行
+	statements := splitSQL(string(data))
+	for _, stmt := range statements {
+		if len(stmt) < 5 {
+			continue
+		}
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// splitSQL 将 SQL 文本按 `;` 分割为独立语句，保留注释和 DDL
+func splitSQL(text string) []string {
+	var stmts []string
+	var current []byte
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if c == '-' && i+1 < len(text) && text[i+1] == '-' {
+			// 跳过单行注释
+			for i < len(text) && text[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if c == ';' {
+			stmts = append(stmts, trimSQL(string(current)))
+			current = current[:0]
+			continue
+		}
+		current = append(current, c)
+	}
+	if len(current) > 0 {
+		stmts = append(stmts, trimSQL(string(current)))
+	}
+	return stmts
+}
+
+func trimSQL(s string) string {
+	// 去除前导和尾随空白
+	start, end := 0, len(s)
+	for start < end && (s[start] == ' ' || s[start] == '\n' || s[start] == '\r' || s[start] == '\t') {
+		start++
+	}
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\n' || s[end-1] == '\r' || s[end-1] == '\t') {
+		end--
+	}
+	if start >= end {
+		return ""
+	}
+	return s[start:end]
 }
