@@ -1,0 +1,53 @@
+# Go
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+go.work
+go.work.sum
+vendor/
+
+# Node / JS
+node_modules/
+dist/
+.cache/
+*.tsbuildinfo
+
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+*.iml
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Rust / Tauri
+target/
+frontend/desktop/src-tauri/target/
+
+# IDE
+.idea/
+*.swp
+*.swo
+.vscode/
+.history/
+
+# OS
+.DS_Store
+Thumbs.db
+*.~
+
+# Env
+.env
+.env.local
+.env.*.local
+*.local.yaml
+*.local.toml
+
+# Logs
+*.log
